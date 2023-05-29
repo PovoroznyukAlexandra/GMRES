@@ -12,7 +12,7 @@ std::uniform_real_distribution <>floatDist(-1, 0);
 
 
 // Функция для умножения матрицы на вектор
-void MatVec(double** A, int n, const double* x, int m, double *res) {
+void MatVec(double** A, int n, double* x, int m, double *res) {
     int my_rank, total_processes;
     MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &total_processes);
@@ -114,7 +114,7 @@ double* Solve_Upper_Triangular(double** R, const double* b, int n){
 }
 
 
-double* rotation(const double* vec, const vector<double>& cotangences, int n){
+double* rotation(double* vec, const vector<double>& cotangences, int n){
     assert(n > cotangences.size());
     auto *h = new double [n];
     auto* res = new double [n];
