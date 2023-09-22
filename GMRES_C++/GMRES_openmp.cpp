@@ -16,6 +16,7 @@ std::uniform_real_distribution <>floatDist(-1, 0);
 // Функция для умножения матрицы на вектор
 double* MatVec(double** A, int n, const double* x, int m) {
     auto* y = new double[n];
+    #pragma omp parallel for num_threads(num_threads)
     for (int i = 0; i < n; i++) {
         y[i] = 0;
         for (int j = 0; j < m; j++) {
@@ -25,21 +26,6 @@ double* MatVec(double** A, int n, const double* x, int m) {
     return y;
 }
 
-/*
-double** Transpose(double** Q, int n, int m){
-    auto **Q_T = new double* [m];
-    for (int i = 0; i < m; i++){
-        Q_T[i] = new double [n];
-    }
-    for(int i = 0; i < n; i++){
-        for(int j = 0; j < m; j++){
-            Q_T[j][i] = Q[i][j];
-        }
-    }
-    return Q_T;
-}
- */
-
 // Функция для вычисления нормы вектора
 double Norm(const double* x, int n) {
     double sum = 0;
@@ -48,17 +34,6 @@ double Norm(const double* x, int n) {
     }
     return sqrt(sum);
 }
-
-/*
-// Функция для вычисления скалярного произведения
-double Dot(const double* x, const double* y, int n) {
-    double sum = 0;
-    for (int i = 0; i < n; i++) {
-        sum += x[i] * y[i];
-    }
-    return sum;
-}
-*/
 
 double* Solve_Upper_Triangular(double** R, const double* b, int n){
     auto* x = new double [n];
@@ -86,6 +61,7 @@ double* rotation(const double* vec, const vector<double>& cotangences, int n){
         res[j] = vec[j];
     }
     int i = 0;
+    #pragma omp parallel for num_threads(num_threads)
     for (double ctg : cotangences){
         double s = 1 / sqrt(pow(ctg, 2) + 1);
         double c = ctg * s;
@@ -139,7 +115,7 @@ double* GMRES(double** A, const double* b, int n, int k, double eps) {
     //ctg = []
     vector <double> ctg;
     
-    #pragma omp parallel for num_threads(num_threads)
+
     while (residual > eps){
         m += 1;   //step m
         if (m > k-1){
