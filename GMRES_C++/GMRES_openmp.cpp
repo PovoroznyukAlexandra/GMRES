@@ -61,7 +61,6 @@ double* rotation(const double* vec, const vector<double>& cotangences, int n){
         res[j] = vec[j];
     }
     int i = 0;
-    #pragma omp parallel for num_threads(num_threads)
     for (double ctg : cotangences){
         double s = 1 / sqrt(pow(ctg, 2) + 1);
         double c = ctg * s;
