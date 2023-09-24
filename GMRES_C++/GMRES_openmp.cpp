@@ -29,9 +29,11 @@ double* MatVec(double** A, int n, const double* x, int m) {
 // Функция для вычисления нормы вектора
 double Norm(const double* x, int n) {
     double sum = 0;
+    #pragma omp parallel for reduction(+:sum)
     for (int i = 0; i < n; i++) {
         sum += x[i] * x[i];
     }
+
     return sqrt(sum);
 }
 
@@ -44,6 +46,8 @@ double* Solve_Upper_Triangular(double** R, const double* b, int n){
     // Решение системы методом обратной подстановки
     for (int i = n - 1; i >= 0; --i){
         double sum = 0;
+
+        #pragma omp parallel for reduction(+:sum)
         for (int j = i + 1; j < n; ++j){
             sum += R[i][j] * x[j];
         }
