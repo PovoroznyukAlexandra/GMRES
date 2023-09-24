@@ -56,7 +56,7 @@ double* Solve_Upper_Triangular(double** R, const double* b, int n){
 double* rotation(const double* vec, const vector<double>& cotangences, int n){
     assert(n > cotangences.size());
     auto *h = new double [n];
-    auto* res = new double [n];
+    auto* res = new double [n+1];
     for (int j = 0; j < n; j++){
         res[j] = vec[j];
     }
