@@ -13,30 +13,25 @@ std::mt19937 gen(rd());
 std::uniform_real_distribution<> floatDist(-1, 0);
 
 // Функция для умножения матрицы на вектор
-double *MatVec(double *local_matrix, double *local_vector, int local_n, int m)
-{
+double *MatVec(double *local_matrix, double *local_vector, int local_n, int m){
     double *local_result = new double[local_n];
-    for (int i = 0; i < local_n; i++)
-    {
+    for (int i = 0; i < local_n; i++){
         local_result[i] = 0.0;
-        for (int j = 0; j < m; j++)
-        {
+        for (int j = 0; j < m; j++){
             local_result[i] += local_matrix[i * m + j] * local_vector[j];
         }
     }
     return local_result;
 }
 
-double *MatVecWrap(double **A, int n, double *local_vector, int m)
-{
+double *MatVecWrap(double **A, int n, double *local_vector, int m){
     int rank, size;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
     int local_n = n / size; // Число строк на каждом процессе
 
-    if (rank == size - 1)
-    {
+    if (rank == size - 1){
         local_n += n % size;
     }
 
@@ -47,16 +42,13 @@ double *MatVecWrap(double **A, int n, double *local_vector, int m)
     double *new_matrix = new double[n * m];
     double *local_matrix = new double[local_n * m];
 
-    if (rank == 0)
-    {
-        for (int i = 0; i < n; ++i)
-        {
+    if (rank == 0){
+        for (int i = 0; i < n; ++i){
             std::memcpy(new_matrix + i * m, A[i], m * sizeof(double));
         }
     }
 
-    for (int i = 0; i < size; ++i)
-    {
+    for (int i = 0; i < size; ++i){
         counts_rcv[i] = (i != size - 1) ? n / size : n / size + n % size;
         shifts_rcv[i] = (n / size) * i;
         counts_snd[i] = counts_rcv[i] * m;
@@ -87,8 +79,7 @@ double *MatVecWrap(double **A, int n, double *local_vector, int m)
     return result;
 }
 // Функция для вычисления нормы вектора
-double Norm(const double *x, int n)
-{
+double Norm(const double *x, int n){
     double sum = 0;
     for (int i = 0; i < n; i++)
     {
@@ -97,20 +88,16 @@ double Norm(const double *x, int n)
     return sqrt(sum);
 }
 
-double *Solve_Upper_Triangular(double **R, const double *b, int n)
-{
+double *Solve_Upper_Triangular(double **R, const double *b, int n){
     auto *x = new double[n];
     // Инициализация вектора решения нулями
-    for (int i = 0; i < n; ++i)
-    {
+    for (int i = 0; i < n; ++i){
         x[i] = 0;
     }
     // Решение системы методом обратной подстановки
-    for (int i = n - 1; i >= 0; --i)
-    {
+    for (int i = n - 1; i >= 0; --i){
         double sum = 0;
-        for (int j = i + 1; j < n; ++j)
-        {
+        for (int j = i + 1; j < n; ++j){
             sum += R[i][j] * x[j];
         }
         x[i] = (b[i] - sum) / R[i][i];
@@ -122,7 +109,7 @@ double *rotation(const double *vec, const vector<double> &cotangences, int n)
 {
     assert(n > cotangences.size());
     auto *h = new double[n];
-    auto *res = new double[n];
+    auto *res = new double[n+1];
     for (int j = 0; j < n; j++)
     {
         res[j] = vec[j];
