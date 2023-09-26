@@ -1,399 +1,287 @@
-#include <iostream>
 #include <vector>
 #include <cmath>
+#include <iostream>
 #include <random>
 #include <chrono>
-#include <cstring>
-#include <cassert>
-#include "mpi.h"
+#include <algorithm>
+#include <cblas.h>
+#include <mpi.h>
+#include <unistd.h>
 
-using namespace std;
 std::random_device rd;
 std::mt19937 gen(rd());
 std::uniform_real_distribution<> floatDist(-1, 0);
 
-// Функция для умножения матрицы на вектор
-double *MatVec(double *local_matrix, double *local_vector, int local_n, int m){
-    double *local_result = new double[local_n];
-    for (int i = 0; i < local_n; i++){
-        local_result[i] = 0.0;
-        for (int j = 0; j < m; j++){
-            local_result[i] += local_matrix[i * m + j] * local_vector[j];
-        }
-    }
-    return local_result;
-}
-
-double *MatVecWrap(double **A, int n, double *local_vector, int m){
+class Matvec
+{
+private:
+    int row, col;
+    MPI_Comm comm;
     int rank, size;
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::vector<double> local_A;
 
-    int local_n = n / size; // Число строк на каждом процессе
+    std::vector<int> shifts_rcv;
+    std::vector<int> counts_rcv;
 
-    if (rank == size - 1){
-        local_n += n % size;
-    }
-
-    int *shifts_rcv = new int[size];
-    int *counts_rcv = new int[size];
-    int *shifts_snd = new int[size];
-    int *counts_snd = new int[size];
-    double *new_matrix = new double[n * m];
-    double *local_matrix = new double[local_n * m];
-
-    if (rank == 0){
-        for (int i = 0; i < n; ++i){
-            std::memcpy(new_matrix + i * m, A[i], m * sizeof(double));
-        }
-    }
-
-    for (int i = 0; i < size; ++i){
-        counts_rcv[i] = (i != size - 1) ? n / size : n / size + n % size;
-        shifts_rcv[i] = (n / size) * i;
-        counts_snd[i] = counts_rcv[i] * m;
-        shifts_snd[i] = shifts_rcv[i] * m;
-    }
-
-    int error_code;
-
-    error_code = MPI_Scatterv(new_matrix, counts_snd, shifts_snd, MPI_DOUBLE, local_matrix, local_n * m, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    error_code = MPI_Bcast(local_vector, m, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    double *local_result = MatVec(local_matrix, local_vector, local_n, m);
-
-    double *result = new double[n];
-
-    error_code = MPI_Gatherv(local_result, local_n, MPI_DOUBLE, result, counts_rcv, shifts_rcv, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    MPI_Bcast(result, n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-    delete[] local_result;
-    delete[] local_matrix;
-    delete[] shifts_rcv;
-    delete[] shifts_snd;
-    delete[] counts_rcv;
-    delete[] counts_snd;
-    delete[] new_matrix;
-
-    return result;
-}
-// Функция для вычисления нормы вектора
-double Norm(const double *x, int n){
-    double sum = 0;
-    for (int i = 0; i < n; i++)
+public:
+    Matvec(const int n_, const int m_, MPI_Comm comm)
     {
-        sum += x[i] * x[i];
-    }
-    return sqrt(sum);
-}
+        MPI_Comm_rank(comm, &rank);
+        MPI_Comm_size(comm, &size);
 
-double *Solve_Upper_Triangular(double **R, const double *b, int n){
-    auto *x = new double[n];
-    // Инициализация вектора решения нулями
-    for (int i = 0; i < n; ++i){
-        x[i] = 0;
-    }
-    // Решение системы методом обратной подстановки
-    for (int i = n - 1; i >= 0; --i){
-        double sum = 0;
-        for (int j = i + 1; j < n; ++j){
-            sum += R[i][j] * x[j];
+        int local_n = n_ / size; // Число строк на каждом процессе
+
+        if (rank == size - 1)
+        {
+            local_n += n_ % size;
         }
-        x[i] = (b[i] - sum) / R[i][i];
+
+        local_A.resize(local_n * m_);
+        shifts_rcv.resize(size);
+        counts_rcv.resize(size);
+
+        for (int i = 0; i < local_n * m_; i++)
+        {
+            local_A[i] = (-floatDist(gen));
+        }
+
+        row = local_n;
+        col = m_;
+
+        for (int i = 0; i < size; ++i)
+        {
+            counts_rcv[i] = (i != size - 1) ? n_ / size : n_ / size + n_ % size;
+            shifts_rcv[i] = (n_ / size) * i;
+        }
+    }
+    std::vector<double> matvec(std::vector<double> &x)
+    {
+        std::vector<double> local_result(row);
+
+        cblas_dgemv(CblasRowMajor, CblasNoTrans, row, col, 1.0, local_A.data(), col, x.data(), 1, 1.0, local_result.data(), 1);
+
+        std::vector<double> result(col);
+
+        MPI_Gatherv(local_result.data(), row, MPI_DOUBLE, result.data(), counts_rcv.data(), shifts_rcv.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        // MPI_Bcast(result.data(), col, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        return result;
+    }
+};
+
+std::vector<double> Solve_Upper_Triangular(std::vector<double> &R, std::vector<double> &b, int n)
+{
+    std::vector<double> x(n, 0);
+
+    for (int i = n - 1; i >= 0; --i)
+    {
+        double sum = 0;
+        for (int j = i + 1; j < n; ++j)
+        {
+            sum += R[i * n + j] * x[j];
+        }
+        x[i] = (b[i] - sum) / R[i * n + i];
     }
     return x;
 }
 
-double *rotation(const double *vec, const vector<double> &cotangences, int n)
+double norm(std::vector<double> &y)
 {
-    assert(n > cotangences.size());
-    auto *h = new double[n];
-    auto *res = new double[n+1];
-    for (int j = 0; j < n; j++)
-    {
-        res[j] = vec[j];
-    }
-    int i = 0;
-    for (double ctg : cotangences)
-    {
-        double s = 1 / sqrt(pow(ctg, 2) + 1);
-        double c = ctg * s;
-        double temp1 = c * vec[i] + s * vec[i + 1];
-        double temp2 = -s * vec[i] + c * vec[i + 1];
-        res[i] = temp1;
-        res[i + 1] = temp2;
-        i += 1;
-    }
-    for (int j = 0; j < n; j++)
-    {
-        h[j] = res[j];
-    }
-    return h;
+    double norm_local = std::sqrt(std::accumulate(y.begin(), y.end(), 0.0, [](double acc, double x)
+                                                  { return acc + x * x; }));
+    return norm_local;
 }
 
-// Функция GMRES
-double *GMRES(double **A, const double *b, int n, int k, double eps)
+std::vector<double> slice(std::vector<double> &y, int rows, int cols, int y_m)
 {
-    int rank, size;
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::vector<double> res(rows * cols);
 
-    double **V;
-    double *x = new double[n];
-    double **R; // H = QR
-    double *e_1_rot;
-
-    if (rank == 0)
+    for (int i = 0; i < rows; i++)
     {
-        V = new double *[n];
-        R = new double *[k];
-
-        for (int i = 0; i < n; i++)
-        {
-            V[i] = new double[k];
-            for (int j = 0; j < k; j++)
-            {
-                V[i][j] = 0;
-            }
-        }
-        for (int i = 0; i < k; i++)
-        {
-            R[i] = new double[k];
-            for (int j = 0; j < k; j++)
-            {
-                R[i][j] = 0;
-            }
-        }
-        e_1_rot = new double[n];
-        e_1_rot[0] = 1;
-        for (int i = 1; i < n; i++)
-        {
-            e_1_rot[i] = 0;
-        }
+        std::copy(y.begin() + i * y_m, y.begin() + i * y_m + cols, res.begin() + i * cols);
     }
 
-    // step 0
-    int m = 0;
-    double beta = Norm(b, n);
+    return res;
+}
 
-    auto *v = new double[n];
-
-    if (rank == 0)
+// find rotation to a-> (a^2 +b ^2)^0.5, b -> 0
+void find_rot(double a, double b, double &c, double &s)
+{
+    // std::cout << a << " " << b << '\n';
+    double mod = sqrt(a * a + b * b);
+    if (mod == 0)
     {
-        for (int i = 0; i < n; i++)
+        c = 1;
+        s = 0;
+    }
+    else
+    {
+        s = -b / mod;
+        c = a / mod;
+    }
+}
+
+// apply all rotates to last col of matrix A.
+// void apply_rot_to_last_col(double *A, size_t n, size_t m, std::vector<double> const &cs, std::vector<double> const &ss)
+// {
+//     for (int i = cs.size() - 1; i >= 0; --i)
+//     {
+//         size_t cur_pos = i, next_pos = i + 1;
+//         // std::cout << A[cur_pos] << " " << A[next_pos] << '\n';
+//         double c = cs[i], s = -ss[i];
+//         double a1 = c * A[cur_pos] - s * A[next_pos];
+//         double a2 = s * A[cur_pos] + c * A[next_pos];
+//         A[cur_pos] = a1, A[next_pos] = a2;
+//     }
+// }
+void apply_rot_to_last_col(double *A, size_t n, size_t m, std::vector<double> const &cs, std::vector<double> const &ss)
+{
+    size_t cur_pos = m - 1, next_pos = m + (m - 1);
+    for (int i = 0; i < cs.size(); ++i, cur_pos += m, next_pos += m)
+    {
+        // std::cout << A[cur_pos] << " " << A[next_pos] << '\n';
+        double c = cs[i], s = ss[i];
+        double a1 = c * A[cur_pos] - s * A[next_pos];
+        double a2 = s * A[cur_pos] + c * A[next_pos];
+        A[cur_pos] = a1, A[next_pos] = a2;
+    }
+}
+
+std::vector<double> GMRES(std::vector<double> &b, Matvec &matvec, double atol = 1e-8, double rtol = 1e-6, int maxiter = 50, int proc_id = 0, int n_proc = 1)
+{
+    auto norm_b = norm(b); // norm_b = norm(b)
+    std::vector<double> q(b.size());
+
+    std::transform(b.begin(), b.end(), q.begin(), [norm_b](double value)
+                   { return value / norm_b; }); // q = b / norm_b
+
+    std::vector<double> Q = q; // Q = q[:, None]
+
+    std::vector<double> h((maxiter + 1) * maxiter, 0); // h = np.zeros((maxiter + 1, maxiter))
+
+    std::vector<double> y;
+
+    std::vector<double> cos_rot, sin_rot;
+
+    int n;
+    double *r = new double[1];
+    *r = norm_b;
+
+    for (n = 0; n < maxiter; ++n)
+    {
+        MPI_Bcast(r, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Bcast(q.data(), q.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        auto v = matvec.matvec(q); // v = matvec(q)
+
+        MPI_Bcast(v.data(), v.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        if (proc_id == 0)
         {
-            v[i] = b[i] / beta;
-            V[i][0] = v[i];
+            for (int j = 0; j <= n; ++j)
+            {
+                std::vector<double> tmp(v.size());
+                std::vector<double> Q_j(Q.begin() + q.size() * j, Q.begin() + q.size() * (j + 1));
+
+                h[j * maxiter + n] = cblas_ddot(v.size(), Q_j.data(), 1, v.data(), 1); // h[j, n] = np.dot(Q[:, j], v)
+
+                std::transform(Q_j.begin(), Q_j.end(), tmp.begin(), [&h, j, maxiter, n](double value)
+                               { return value * h[j * maxiter + n]; }); // h[j, n] * Q[:, j]
+                std::transform(v.begin(), v.end(), tmp.begin(), v.begin(),
+                               [](double a, double b)
+                               { return a - b; }); // v -= h[j, n] * Q[:, j]
+            }
+            h[(n + 1) * maxiter + n] = norm(v); // h[n+1, n] = norm(v)
+            std::transform(v.begin(), v.end(), q.begin(), [&h, maxiter, n](double value)
+                           { return value / h[(n + 1) * maxiter + n]; }); // q = v / h[n+1, n]
+            Q.resize(Q.size() + q.size());
+            std::copy(q.begin(), q.end(), Q.end() - q.size()); // Q = np.append(Q, q[:, None], axis=1)
+            std::vector<double> e1(n + 2, 0);                  // e1 = np.zeros(n+2)
+            e1[0] = norm_b;                                    // e1[0] = norm_b
+
+            // QR algo
+            apply_rot_to_last_col(h.data(), n + 2, n + 1, cos_rot,
+                                  sin_rot); // apply all computed rotations to last h column
+            double c, s;
+            find_rot(h[n * maxiter + n], h[(n + 1) * maxiter + n], c,
+                     s); // find new rotation to turn h in triangular matrix
+            cos_rot.push_back(c), sin_rot.emplace_back(s);
+
+            apply_rot_to_last_col(e1.data(), n + 2, 1, cos_rot, sin_rot); // apply all rotation to right side: Q.T @ b
+
+            auto R = slice(h, n + 2, n + 1, maxiter); // h[:n+2, :n+1]
+            int R_n = n + 2, R_m = n + 1;
+
+            // // Lin solve start
+            auto R_for_lin = slice(R, n + 1, n + 1, n + 1);
+            *r = std::abs(e1.back()); // r = np.abs(Qb[-1])
+
+            // std::cout << *r << " " << n << std::endl;
+
+            std::vector<double> Qb_for_lin(n + 1);
+            std::copy(e1.begin(), e1.begin() + n + 1, Qb_for_lin.begin());
+
+            y = Solve_Upper_Triangular(R_for_lin, Qb_for_lin, n + 1);
+            // // // Lin solve end
+        }
+        // std::cout << "here" << std::endl;
+        // MPI_Bcast(r, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        if (*r < atol + norm_b * rtol)
+        {
+            std::cout << *r << " " << n << std::endl;
+
+            std::vector<double> Q_resized(Q.begin(), Q.begin() + (n + 1) * q.size());
+            int Q_n = q.size(), Q_m = Q_resized.size() / q.size();
+
+            std::vector<double> x(q.size(), 0);
+
+            cblas_dgemv(CblasColMajor, CblasNoTrans, Q_n, Q_m, 1.0, Q_resized.data(), Q_n, y.data(), 1, 1.0,
+                        x.data(), 1);
+            MPI_Bcast(x.data(), x.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+            return x;
         }
     }
-
-    double *residual = new double[1];
-    *residual = beta;
-    MPI_Bcast(residual, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-    // ctg = []
-    vector<double> ctg;
-
-    for (int CNT = 0; CNT < k; CNT++)
+    std::vector<double> x(q.size());
+    if (proc_id == 0)
     {
-        m += 1; // step m
+        std::cout << "max iters reached: " << maxiter << std::endl;
 
-        if (*residual < eps)
-        {
-            break;
-        }
+        std::vector<double> Q_resized(Q.begin(), Q.begin() + (n + 1) * q.size());
+        int Q_n = q.size(), Q_m = Q_resized.size() / q.size();
 
-        v = MatVecWrap(A, n, v, n);
-
-        double *h_m = new double[1];
-        double *h;
-        if (rank == 0)
-        {
-            h = new double[m + 1];
-            for (int i = 0; i < m; i++)
-            {
-                h[i] = 0;
-                for (int j = 0; j < n; j++)
-                {
-                    h[i] += V[j][i] * v[j];
-                }
-            }
-
-            for (int i = 0; i < n; i++)
-            {
-                for (int j = 0; j < m; j++)
-                {
-                    v[i] -= V[i][j] * h[j];
-                }
-            }
-            h[m] = Norm(v, n);
-            *h_m = h[m];
-        }
-        MPI_Bcast(h_m, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-
-        auto *c = new double[m];
-        if (*h_m < 1e-14)
-        {
-            double **V_1;
-
-            if (rank == 0)
-            {
-                V_1 = new double *[n];
-                cout << "dim K = n" << endl;
-                auto *c_1 = new double[m - 1];
-                auto *e_1_rot_1 = new double[m - 1];
-                auto **R_1 = new double *[m - 1];
-                for (int i = 0; i < m - 1; i++)
-                {
-                    R_1[i] = new double[m - 1];
-                    for (int j = 0; j < m - 1; j++)
-                    {
-                        R_1[i][j] = R[i][j];
-                    }
-                    c_1[i] = c[i];
-                    e_1_rot_1[i] = beta * e_1_rot[i];
-                }
-                c = Solve_Upper_Triangular(R_1, e_1_rot_1, m - 1);
-                for (int i = 0; i < n; i++)
-                {
-                    V_1[i] = new double[m - 1];
-                    for (int j = 0; j < m - 1; j++)
-                    {
-                        V_1[i][j] = V[i][j];
-                    }
-                }
-            }
-            x = MatVecWrap(V_1, n, c, m - 1);
-            // cout << *h_m << endl;
-            return x; // return x
-        }
-
-        double **V_2;
-
-        if (rank == 0)
-        {
-            for (int i = 0; i < n; i++)
-            {
-                v[i] /= h[m];
-                V[i][m] = v[i];
-            }
-            h = rotation(h, ctg, m + 1);
-            ctg.push_back(h[m - 1] / h[m]);
-
-            double &ind = ctg.back();
-            vector<double> ctg_1 = {ind};
-            auto *tmp = new double[2];
-
-            tmp[0] = h[m - 1];
-            tmp[1] = h[m];
-            tmp = rotation(tmp, ctg_1, 2);
-            h[m - 1] = tmp[0];
-            h[m] = tmp[1];
-            assert(h[m] < 1e-8);
-            for (int i = 0; i < m + 1; i++)
-            {
-                R[i][m - 1] = h[i];
-            }
-
-            tmp[0] = e_1_rot[m - 1];
-            tmp[1] = e_1_rot[m];
-            tmp = rotation(tmp, ctg_1, 2);
-            e_1_rot[m - 1] = tmp[0];
-            e_1_rot[m] = tmp[1];
-
-            assert(h[m] < 1e-8);
-            for (int i = 0; i < m + 1; i++)
-            {
-                R[i][m - 1] = h[i];
-            }
-
-            *residual = beta * abs(e_1_rot[m]);
-
-            auto *e_1_rot_2 = new double[m];
-            auto **R_2 = new double *[m];
-            for (int i = 0; i < m; i++)
-            {
-                R_2[i] = new double[m];
-                for (int j = 0; j < m; j++)
-                {
-                    R_2[i][j] = R[i][j];
-                }
-                e_1_rot_2[i] = beta * e_1_rot[i];
-            }
-            c = Solve_Upper_Triangular(R_2, e_1_rot_2, m - 1);
-            V_2 = new double *[n];
-            for (int i = 0; i < n; i++)
-            {
-                V_2[i] = new double[m - 1];
-                for (int j = 0; j < m - 1; j++)
-                {
-                    V_2[i][j] = V[i][j];
-                }
-            }
-        }
-        MPI_Bcast(residual, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        x = MatVecWrap(V_2, n, c, m);
+        cblas_dgemv(CblasColMajor, CblasNoTrans, Q_n, Q_m, 1.0, Q_resized.data(), Q_n, y.data(), 1, 1.0, x.data(), 1);
     }
-    if (rank == 0)
-    {
-        cout << "m = " << m << endl;
-    }
+    MPI_Bcast(x.data(), x.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
     return x;
 }
 
 int main(int argc, char **argv)
 {
-    MPI_Init(&argc, &argv);
+    int mpi_thread_prov;
+    MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &mpi_thread_prov);
+    int proc_id, n_proc;
+    MPI_Comm_rank(MPI_COMM_WORLD, &proc_id);
+    MPI_Comm_size(MPI_COMM_WORLD, &n_proc);
 
-    int rank, size;
-    MPI_Comm_size(MPI_COMM_WORLD, &size);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-
-    // cout << "╰( ͡° ͜ʖ ͡° )つ──☆*" << endl;
     int n = 10;
-    double tol = 1e-6;
-    int maxit = 50;
-    srand(time(nullptr));
 
-    auto *b = new double[n];
-    auto *x = new double[n];
-    auto **A = new double *[n];
+    std::vector<double> b(n);
 
-    if (rank == 0)
+    for (int i = 0; i < n; ++i)
     {
-        for (int i = 0; i < n; i++)
-        {
-            A[i] = new double[n];
-            b[i] = (-floatDist(gen));
-            for (int j = 0; j < n; j++)
-            {
-                A[i][j] = (-floatDist(gen));
-            }
-        }
+        b[i] = (-floatDist(gen));
     }
 
-    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
+    Matvec matrix(n, n, MPI_COMM_WORLD);
 
-    x = GMRES(A, b, n, maxit, tol);
-    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    auto res = GMRES(b, matrix, 1e-8, 1e-6, n, proc_id, n_proc);
 
-    if (rank == 0)
+    if (proc_id == 0)
     {
-        std::cout << "Time for GMRES: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() << " ms" << std::endl;
-        for (int i = 0; i < n; i++)
+        for (auto x : res)
         {
-            cout << x[i] << ' ';
+            std::cout << x << " ";
         }
-        cout << endl;
+        std::cout << std::endl;
     }
-
-    // for (int i = 0; i < n; i++)
-    // {
-    //     delete[] A[i];
-    // }
-    // delete[] A; // Удаляем массивы
-    // delete[] b;
-    // delete[] x;
 
     MPI_Finalize();
 
