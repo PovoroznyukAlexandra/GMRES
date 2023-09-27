@@ -63,7 +63,7 @@ public:
         std::vector<double> result(col);
 
         MPI_Gatherv(local_result.data(), row, MPI_DOUBLE, result.data(), counts_rcv.data(), shifts_rcv.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
-        // MPI_Bcast(result.data(), col, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+        MPI_Bcast(result.data(), col, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
         return result;
     }
@@ -122,24 +122,22 @@ void find_rot(double a, double b, double &c, double &s)
 }
 
 // apply all rotates to last col of matrix A.
-// void apply_rot_to_last_col(double *A, size_t n, size_t m, std::vector<double> const &cs, std::vector<double> const &ss)
-// {
-//     for (int i = cs.size() - 1; i >= 0; --i)
-//     {
-//         size_t cur_pos = i, next_pos = i + 1;
-//         // std::cout << A[cur_pos] << " " << A[next_pos] << '\n';
-//         double c = cs[i], s = -ss[i];
-//         double a1 = c * A[cur_pos] - s * A[next_pos];
-//         double a2 = s * A[cur_pos] + c * A[next_pos];
-//         A[cur_pos] = a1, A[next_pos] = a2;
-//     }
-// }
-void apply_rot_to_last_col(double *A, size_t n, size_t m, std::vector<double> const &cs, std::vector<double> const &ss)
+void apply_rot_to_last_col(double *A, size_t m, size_t stride, std::vector<double> const &cs, std::vector<double> const &ss)
 {
-    size_t cur_pos = m - 1, next_pos = m + (m - 1);
-    for (int i = 0; i < cs.size(); ++i, cur_pos += m, next_pos += m)
+    size_t cur_pos = m - 1, next_pos = m + (stride - 1);
+    for (int i = 0; i < cs.size(); ++i, cur_pos += stride, next_pos += stride)
     {
-        // std::cout << A[cur_pos] << " " << A[next_pos] << '\n';
+        double c = cs[i], s = ss[i];
+        double a1 = c * A[cur_pos] - s * A[next_pos];
+        double a2 = s * A[cur_pos] + c * A[next_pos];
+        A[cur_pos] = a1, A[next_pos] = a2;
+    }
+}
+void apply_rot_b(double *A, size_t m, size_t stride, std::vector<double> const &cs, std::vector<double> const &ss)
+{
+    size_t cur_pos = 0, next_pos = cur_pos + 1;
+    for (int i = 0; i < cs.size(); ++i, cur_pos++, next_pos++)
+    {
         double c = cs[i], s = ss[i];
         double a1 = c * A[cur_pos] - s * A[next_pos];
         double a2 = s * A[cur_pos] + c * A[next_pos];
@@ -171,9 +169,9 @@ std::vector<double> GMRES(std::vector<double> &b, Matvec &matvec, double atol = 
     {
         MPI_Bcast(r, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         MPI_Bcast(q.data(), q.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
         auto v = matvec.matvec(q); // v = matvec(q)
 
-        MPI_Bcast(v.data(), v.size(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
         if (proc_id == 0)
         {
             for (int j = 0; j <= n; ++j)
@@ -198,14 +196,19 @@ std::vector<double> GMRES(std::vector<double> &b, Matvec &matvec, double atol = 
             e1[0] = norm_b;                                    // e1[0] = norm_b
 
             // QR algo
-            apply_rot_to_last_col(h.data(), n + 2, n + 1, cos_rot,
-                                  sin_rot); // apply all computed rotations to last h column
+            apply_rot_to_last_col(h.data(), n + 1, maxiter, cos_rot, sin_rot); // apply all computed rotations to last h column
+
             double c, s;
-            find_rot(h[n * maxiter + n], h[(n + 1) * maxiter + n], c,
-                     s); // find new rotation to turn h in triangular matrix
+            find_rot(h[n * maxiter + n], h[(n + 1) * maxiter + n], c, s); // find new rotation to turn h in triangular matrix
+
+            double temp1 = h[n * maxiter + n] * c - h[(n + 1) * maxiter + n] * s;
+            double temp2 = h[n * maxiter + n] * s + h[(n + 1) * maxiter + n] * c;
+            h[n * maxiter + n] = temp1;
+            h[(n + 1) * maxiter + n] = temp2;
+
             cos_rot.push_back(c), sin_rot.emplace_back(s);
 
-            apply_rot_to_last_col(e1.data(), n + 2, 1, cos_rot, sin_rot); // apply all rotation to right side: Q.T @ b
+            apply_rot_b(e1.data(), n + 2, 1, cos_rot, sin_rot); // apply all rotation to right side: Q.T @ b
 
             auto R = slice(h, n + 2, n + 1, maxiter); // h[:n+2, :n+1]
             int R_n = n + 2, R_m = n + 1;
@@ -226,7 +229,7 @@ std::vector<double> GMRES(std::vector<double> &b, Matvec &matvec, double atol = 
         // MPI_Bcast(r, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
         if (*r < atol + norm_b * rtol)
         {
-            std::cout << *r << " " << n << std::endl;
+            // std::cout << *r << " " << n << std::endl;
 
             std::vector<double> Q_resized(Q.begin(), Q.begin() + (n + 1) * q.size());
             int Q_n = q.size(), Q_m = Q_resized.size() / q.size();
@@ -261,26 +264,30 @@ int main(int argc, char **argv)
     MPI_Comm_rank(MPI_COMM_WORLD, &proc_id);
     MPI_Comm_size(MPI_COMM_WORLD, &n_proc);
 
-    int n = 10;
+    int n = 50;
 
     std::vector<double> b(n);
 
-    for (int i = 0; i < n; ++i)
+    if (proc_id == 0)
     {
-        b[i] = (-floatDist(gen));
+        for (int i = 0; i < n; ++i)
+        {
+            b[i] = (-floatDist(gen));
+        }
     }
+    MPI_Bcast(b.data(), n, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
     Matvec matrix(n, n, MPI_COMM_WORLD);
 
     auto res = GMRES(b, matrix, 1e-8, 1e-6, n, proc_id, n_proc);
 
+    auto tmp = matrix.matvec(res);
+
     if (proc_id == 0)
     {
-        for (auto x : res)
-        {
-            std::cout << x << " ";
-        }
-        std::cout << std::endl;
+        std::transform(tmp.begin(), tmp.end(), b.begin(), tmp.begin(), [](double a, double b)
+                       { return a - b; });
+        std::cout << "||Ax - b|| = " << norm(tmp) << std::endl;
     }
 
     MPI_Finalize();
